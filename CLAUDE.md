@@ -57,7 +57,7 @@ Each item below is marked `Fork patch` in the source. Re-check them when merging
 
 ## Integration with the DICOM de-identification pipeline
 
-This repo is the downstream consumer of the sibling **DICOM DEIDENTIFICATION** project (`../DICOM DEIDENTIFICATION`). The two run in **separate conda envs that must not be merged** — `dicom-deid` (Python 3.11, `opencv-python`) vs `tee-view-class` (Python 3.8, `opencv-python-headless==4.5.5.64`); they share data only as AVI files on disk.
+This repo is the downstream consumer of the sibling **DICOM DEIDENTIFICATION** project (`../DICOM DEIDENTIFICATION`). The two run in **separate conda envs that must not be merged** — `dicom-deid` (Python 3.11, `opencv-python-headless>=4.8`) vs `tee-view-class` (Python 3.8, `opencv-python-headless==4.5.5.64`); both use the headless OpenCV build but pin incompatible versions, and they share data only as AVI files on disk.
 
 [integration/](integration/) holds the glue (isolated in one folder to stay separable from upstream):
 

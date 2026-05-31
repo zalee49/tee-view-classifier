@@ -13,9 +13,9 @@
           staged clips into a predictions CSV.
 
   The two envs are isolated on purpose -- incompatible Python pins (3.11 vs 3.8)
-  and conflicting OpenCV builds (opencv-python vs opencv-python-headless). They
-  communicate ONLY through AVI files on disk; this script never mixes them in
-  one interpreter.
+  and incompatible opencv-python-headless version pins (>=4.8 vs ==4.5.5.64).
+  They communicate ONLY through AVI files on disk; this script never mixes them
+  in one interpreter.
 
   `conda run --no-capture-output` is used for every step: letting conda capture
   child output crashes on Windows (cp1252 cannot encode the Unicode that
