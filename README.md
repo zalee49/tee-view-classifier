@@ -72,9 +72,26 @@ Run the whole chain (the de-id step needs `DICOM_DEID_SITE_SECRET` set):
 # -> <out_dir>/avi_staged/ (flat AVIs)  and  <out_dir>/predictions.csv
 ```
 
-Or flatten an existing de-id output and classify it directly:
+Or run the three steps by hand (works on macOS / Linux too, where `run_chain.ps1`
+doesn't). **Each step runs in a different conda env** — de-id in `dicom-deid`
+(Python 3.11), staging and inference in `tee-view-class` (Python 3.8); the two envs
+must not be merged and share data only as AVIs on disk:
 
-```powershell
+```bash
+# 1. De-identify (in the sibling DICOM de-id repo; env: dicom-deid).
+#    Needs DICOM_DEID_SITE_SECRET set. Writes <out_dir>/avi/<patient>/<clip>.avi.
+dicom-deid --input <raw_dicom_dir> --output <out_dir> --config configs/default.yaml
+
+# 2. Stage: flatten the nested avi/ tree into one folder of only AVIs (env: tee-view-class).
+#    --deid-output is the dir CONTAINING avi/, not avi/ itself.
 python integration/stage_avis.py --deid-output <out_dir> --staging <out_dir>/avi_staged
-python -m src.inference --data_path <out_dir>/avi_staged --weights_path weights/weights.ckpt --save_predictions <out_dir>/predictions.csv
+
+# 3. Classify the flat folder (env: tee-view-class). Run from the repo root.
+python -m src.inference \
+  --data_path <out_dir>/avi_staged \
+  --weights_path weights/weights.ckpt \
+  --save_predictions <out_dir>/predictions.csv
 ```
+
+The predictions CSV has one row per clip (`filename` = `<patient>__<clip>.avi`) and one
+probability column per view in `CLASS_LIST`; the predicted view is the column-wise argmax.
