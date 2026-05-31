@@ -18,13 +18,18 @@ def crop_resize(
     r_in = in_res[0] / in_res[1]
     r_out = res[0] / res[1]
 
-    # Crop to correct aspect ratio
+    # Crop to correct aspect ratio.
+    # Fork patch: guard padding > 0. When the input aspect ratio is within
+    # rounding distance of the target, padding rounds to 0 and img[:, 0:-0]
+    # would slice to width 0, crashing the cv2.resize below.
     if r_in > r_out:
         padding = int(round((in_res[0] - r_out * in_res[1]) / 2))
-        img = img[:, padding:-padding]
-    if r_in < r_out:
+        if padding > 0:
+            img = img[:, padding:-padding]
+    elif r_in < r_out:
         padding = int(round((in_res[1] - in_res[0] / r_out) / 2))
-        img = img[padding:-padding]
+        if padding > 0:
+            img = img[padding:-padding]
 
     # Resize image
     img = cv2.resize(img, res, interpolation=interpolation)
@@ -62,7 +67,14 @@ def read_video(
     out = np.zeros((n_frames, res[1], res[0], 3), dtype=np.uint8)
 
     for frame_i in range(n_frames):
-        _, frame = cap.read()
+        # Fork patch: check the read flag. CAP_PROP_FRAME_COUNT can over-report
+        # for MJPG AVIs, so a clip that passes the length check above may still
+        # fail to decode mid-stream; without this, a None frame reaches
+        # crop_resize and crashes with a cryptic NoneType error.
+        ok, frame = cap.read()
+        if not ok or frame is None:
+            cap.release()
+            raise IOError(f"{path}: failed to decode frame {frame_i} of {n_frames}")
         if res is not None:
             frame = crop_resize(frame, res)
         out[frame_i] = frame

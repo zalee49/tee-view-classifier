@@ -39,7 +39,10 @@ def predict(data_path, weights_path, save_predictions_path, batch_size, num_work
 
         model = r2plus1d_18(num_classes=len(CLASS_LIST))
 
-        print(model.load_state_dict(torch.load(weights_path)))
+        # map_location=DEVICE: the released checkpoint was saved from cuda:1 on a
+        # multi-GPU box; without this it fails to deserialize on single-GPU or
+        # CPU-only machines ("Attempting to deserialize object on CUDA device 1").
+        print(model.load_state_dict(torch.load(weights_path, map_location=DEVICE)))
 
         model.eval()
         model = model.to(DEVICE)
@@ -68,7 +71,8 @@ def predict(data_path, weights_path, save_predictions_path, batch_size, num_work
 
         df = pd.DataFrame(all_predictions)
 
-        df.to_csv(save_predictions_path)
+        # Fork patch: index=False drops the stray unnamed RangeIndex column.
+        df.to_csv(save_predictions_path, index=False)
 
 
 if __name__ == "__main__":
