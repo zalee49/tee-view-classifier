@@ -1,15 +1,18 @@
 <#
 .SYNOPSIS
-  Chain DICOM de-identification -> AVI staging -> TEE view classification.
+  Chain DICOM pruning -> de-identification -> AVI staging -> TEE view classification.
 
 .DESCRIPTION
   Runs the full two-project pipeline across two ISOLATED conda envs:
 
-    [1/3] dicom-deid     (env: dicom-deid,     Python 3.11) de-identifies the
-          input DICOMs and exports MJPG AVIs to <Output>/avi/<patient>/.
-    [2/3] stage_avis.py  (env: tee-view-class)             flattens + frame-
+    [0/4] prune.py       (env: dicom-deid,     Python 3.11) scans DICOM headers
+          and excludes 3D datasets and non-TEE probes (linear, epiaortic x7-2);
+          writes approved DICOMs to <Output>/dicom_pruned/ and a manifest JSON.
+    [1/4] dicom-deid     (env: dicom-deid,     Python 3.11) de-identifies the
+          pruned DICOMs and exports MJPG AVIs to <Output>/avi/<patient>/.
+    [2/4] stage_avis.py  (env: tee-view-class)             flattens + frame-
           filters those AVIs into <Output>/avi_staged/.
-    [3/3] src.inference  (env: tee-view-class, Python 3.8)  classifies the
+    [3/4] src.inference  (env: tee-view-class, Python 3.8)  classifies the
           staged clips into a predictions CSV.
 
   The two envs are isolated on purpose -- incompatible Python pins (3.11 vs 3.8)
@@ -28,6 +31,10 @@
 .PARAMETER OutputDir
   Where de-identified DICOMs, the audit log, avi/, avi_staged/, and the
   predictions CSV are written. Created if missing.
+
+.PARAMETER UnknownProbeAction
+  What prune.py does when TransducerData is absent or unrecognised: "exclude"
+  (default, conservative) or "include" (pass unknowns through to de-id).
 
 .PARAMETER Config
   dicom-deid YAML config. Defaults to the DICOM project's configs/default.yaml.
@@ -52,6 +59,8 @@
 param(
     [Parameter(Mandatory)] [string] $InputDir,
     [Parameter(Mandatory)] [string] $OutputDir,
+    [ValidateSet("exclude","include")]
+    [string] $UnknownProbeAction = "exclude",
     [string] $Config,
     [string] $Weights,
     [string] $Predictions,
@@ -76,28 +85,38 @@ $DeidRoot       = Join-Path $ProjectsRoot "DICOM DEIDENTIFICATION"
 if (-not $Config)      { $Config      = Join-Path $DeidRoot "configs\default.yaml" }
 if (-not $Weights)     { $Weights     = Join-Path $ClassifierRoot "weights\weights.ckpt" }
 if (-not $Predictions) { $Predictions = Join-Path $OutputDir "predictions.csv" }
-$Staging  = Join-Path $OutputDir "avi_staged"
-$StageHlp = Join-Path $PSScriptRoot "stage_avis.py"
+$PrunedInput = Join-Path $OutputDir "dicom_pruned"
+$Staging     = Join-Path $OutputDir "avi_staged"
+$StageHlp    = Join-Path $PSScriptRoot "stage_avis.py"
+$PruneScript = Join-Path $ProjectsRoot "pruning\prune.py"
 
 # --- Preflight --------------------------------------------------------------
 if (-not $env:DICOM_DEID_SITE_SECRET) {
     Fail "DICOM_DEID_SITE_SECRET is not set; the de-identification step cannot run." 2
 }
-foreach ($p in @($InputDir, $Config, $Weights, $StageHlp)) {
+foreach ($p in @($InputDir, $Config, $Weights, $StageHlp, $PruneScript)) {
     if (-not (Test-Path -LiteralPath $p)) { Fail "Path not found: $p" 2 }
 }
 
-# --- [1/3] De-identify ------------------------------------------------------
-Write-Host "==> [1/3] De-identifying DICOMs (env: $DeidEnv)..." -ForegroundColor Cyan
-conda run --no-capture-output -n $DeidEnv dicom-deid --input $InputDir --output $OutputDir --config $Config
+# --- [0/4] Prune ------------------------------------------------------------
+Write-Host "==> [0/4] Pruning DICOMs (env: $DeidEnv)..." -ForegroundColor Cyan
+conda run --no-capture-output -n $DeidEnv `
+    python $PruneScript --input $InputDir --output $PrunedInput --unknown-probe-action $UnknownProbeAction
+$pruneExit = $LASTEXITCODE
+if ($pruneExit -eq 2) { Fail "prune.py could not run (exit 2)." 2 }
+if ($pruneExit -eq 1) { Fail "Pruning excluded all clips; nothing left to de-identify. Check pruning_manifest.json in $PrunedInput." 1 }
+
+# --- [1/4] De-identify ------------------------------------------------------
+Write-Host "==> [1/4] De-identifying DICOMs (env: $DeidEnv)..." -ForegroundColor Cyan
+conda run --no-capture-output -n $DeidEnv dicom-deid --input $PrunedInput --output $OutputDir --config $Config
 $deidExit = $LASTEXITCODE
 if ($deidExit -eq 2) { Fail "dicom-deid could not run (exit 2)." 2 }
 if ($deidExit -eq 1) {
     Write-Host "WARN: dicom-deid reported per-file failures (exit 1); continuing with clips that succeeded." -ForegroundColor Yellow
 }
 
-# --- [2/3] Stage AVIs -------------------------------------------------------
-Write-Host "==> [2/3] Staging AVIs for the classifier (env: $ClassifierEnv)..." -ForegroundColor Cyan
+# --- [2/4] Stage AVIs -------------------------------------------------------
+Write-Host "==> [2/4] Staging AVIs for the classifier (env: $ClassifierEnv)..." -ForegroundColor Cyan
 conda run --no-capture-output -n $ClassifierEnv python $StageHlp --deid-output $OutputDir --staging $Staging
 $stageExit = $LASTEXITCODE
 # stage_avis exit codes: 0 = clips staged; 3 = de-id produced no AVIs at all;
@@ -111,8 +130,8 @@ switch ($stageExit) {
     default { Fail "Staging failed unexpectedly (stage_avis exit $stageExit)." $stageExit }
 }
 
-# --- [3/3] Classify ---------------------------------------------------------
-Write-Host "==> [3/3] Classifying views (env: $ClassifierEnv)..." -ForegroundColor Cyan
+# --- [3/4] Classify ---------------------------------------------------------
+Write-Host "==> [3/4] Classifying views (env: $ClassifierEnv)..." -ForegroundColor Cyan
 # `python -m src.inference` resolves the `src` package from CWD, so run from the repo root.
 Push-Location $ClassifierRoot
 try {
